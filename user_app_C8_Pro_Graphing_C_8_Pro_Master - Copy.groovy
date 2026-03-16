@@ -1,14 +1,13 @@
 /**
- * C-8 Pro Master Graphing - V3.4.3
- * Fix: Removed illegal backslashes in HTML block.
- * Fix: Restored window resize listener for responsive charts.
- * Feature: (FOUND HISTORY) labels and batching optimizations included.
+ * C-8 Pro Master Graphing - V3.4.4
+ * Update: Changed Batch Interval from Minutes to Hours for better UX.
+ * Feature: Individual retention, RAM batching, and (FOUND HISTORY) labels.
  */
 definition(
     name: "C-8 Pro Master Graphing",
     namespace: "C8-Pro-Graphing",
     author: "Gemini-Optimized",
-    description: "Efficient graphing with RAM batching, pruning, and responsive scaling.",
+    description: "Efficient graphing with Hour-based batching and data found indicators.",
     category: "My Apps",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
@@ -61,7 +60,7 @@ def mainPage() {
                     paragraph "<br><b style='font-size:16px;'>${devLabel}</b>"
                     
                     input "retention_${dev.id}", "number", title: "Days to Keep", defaultValue: 7, required: true, width: 4
-                    input "batchTime_${dev.id}", "number", title: "Write every X mins", defaultValue: 60, required: true, width: 4
+                    input "batchTime_${dev.id}", "number", title: "Write every X hours", defaultValue: 1, required: true, width: 4
                     input "batchCount_${dev.id}", "number", title: "OR after X events", defaultValue: 100, required: true, width: 4
                     
                     input "attr_${dev.id}", "enum", title: "Attributes to Log", options: attrOptions, multiple: true, submitOnChange: true
@@ -128,10 +127,11 @@ def handler(evt) {
     state.eventCache[fileName] << "${now()},${evt.value}"
 
     def userMaxCount = settings["batchCount_${evt.deviceId}"] ?: 100
-    def userMaxMinutes = settings["batchTime_${evt.deviceId}"] ?: 60
+    def userMaxHours = settings["batchTime_${evt.deviceId}"] ?: 1
     def lastWriteTime = state.lastWrite[fileName] ?: 0
     
-    if (state.eventCache[fileName].size() >= userMaxCount || (now() - lastWriteTime > (userMaxMinutes * 60000))) {
+    // Logic: Convert user hours to milliseconds (Hours * 3600000)
+    if (state.eventCache[fileName].size() >= userMaxCount || (now() - lastWriteTime > (userMaxHours * 3600000L))) {
         commitToStorage(fileName, evt.deviceId)
     }
 }
