@@ -5,7 +5,7 @@ definition(
     name: "C-8 Pro Master Graphing",
     namespace: "C8-Pro-Graphing",
     author: "Gemini-Optimized",
-    description: "Efficient graphing with Hour-based batching and Dynamic Attribute filtering.",
+    description: "Graphing with fixed save logic and shortened URLs for Safari.",
     category: "My Apps",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
@@ -33,8 +33,9 @@ def mainPage() {
             state.savedComparisons.eachWithIndex { comp, idx ->
                 def sType = comp.style ?: 'line'
                 def fFill = comp.fill ?: false
+                // Shortened URL to prevent 414 error
                 def cUrl = "${getFullLocalApiServerUrl()}/compare?ids=${comp.ids}&attr=${comp.attr}&style=${sType}&fill=${fFill}&access_token=${state.accessToken}"
-                href url: cUrl, style: "external", title: "<b>${comp.name}</b>", description: "View ${comp.attr} history"
+                href url: cUrl, style: "external", title: "<b>${comp.name}</b>", description: "Click to view ${comp.attr} graph"
             }
         }
 
@@ -45,7 +46,6 @@ def mainPage() {
                     def hasAnyFile = false
                     def attrOptions = [:]
                     def supported = dev.supportedAttributes.collect { it.name }.unique().sort()
-          
                     supported.each { aName ->
                         def exists = false
                         try { 
@@ -56,14 +56,11 @@ def mainPage() {
                         } catch (e) { }
                         attrOptions.put(aName, exists ? "${aName} (FOUND HISTORY)" : "${aName}")
                     }
-                    
                     def devLabel = hasAnyFile ? "${dev.displayName} <b style='color:red;'>(DATA FOUND)</b>" : "${dev.displayName}"
                     paragraph "<br><b style='font-size:16px;'>${devLabel}</b>"
-                    
                     input "retention_${dev.id}", "number", title: "Days to Keep", defaultValue: 7, required: true, width: 4
                     input "batchTime_${dev.id}", "number", title: "Write every X hours", defaultValue: 1, required: true, width: 4
                     input "batchCount_${dev.id}", "number", title: "OR after X events", defaultValue: 100, required: true, width: 4
-                    
                     input "attr_${dev.id}", "enum", title: "Attributes to Log", options: attrOptions, multiple: true, submitOnChange: true
                 }
             }
@@ -122,12 +119,13 @@ def addComparisonPage() {
 
 def appButtonHandler(btn) {
     if (btn == "saveCompBtn") {
-        if (newCompName && newCompSensors) {
-            def sIds = (newCompSensors instanceof List) ? newCompSensors.join(",") : newCompSensors
+        // We use settings here to ensure we grab the current values from the page
+        if (settings.newCompName && settings.newCompSensors) {
+            def sIds = (settings.newCompSensors instanceof List) ? settings.newCompSensors.join(",") : settings.newCompSensors
             def currentComps = state.savedComparisons ?: []
-            currentComps << [name: newCompName, attr: newCompAttr, ids: sIds, style: newCompStyle, fill: (fillBars ?: false)]
+            currentComps << [name: settings.newCompName, attr: settings.newCompAttr, ids: sIds, style: settings.newCompStyle, fill: (settings.fillBars ?: false)]
             state.savedComparisons = currentComps
-            state.lastAction = "Graph '${newCompName}' saved! You can now go back to the main page."
+            state.lastAction = "Graph '${settings.newCompName}' saved! Click 'Done' to return to the main page."
         }
     }
     if (btn.startsWith("del_comp_")) {
@@ -140,6 +138,7 @@ def appButtonHandler(btn) {
 
 def updated() { initialize() }
 def installed() { initialize() }
+
 def initialize() {
     unsubscribe()
     monitoredSensors?.each { dev -> 
@@ -194,7 +193,6 @@ def renderChart() {
     long startTs = startStr ? Date.parse("yyyy-MM-dd", startStr).time : (now() - 86400000)
     long endTs = endStr ? Date.parse("yyyy-MM-dd", endStr).time + 86399999 : now()
     
-    // Formatting dates for the UI inputs beforehand to avoid backslash issues in HTML block
     def displayStart = startStr ?: new Date(now()-86400000).format("yyyy-MM-dd")
     def displayEnd = endStr ?: new Date().format("yyyy-MM-dd")
     
