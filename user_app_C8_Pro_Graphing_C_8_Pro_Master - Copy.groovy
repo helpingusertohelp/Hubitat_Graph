@@ -27,6 +27,9 @@ def mainPage() {
 
     dynamicPage(name: "mainPage", title: "Master Graphing System", install: true, uninstall: true) {
         section("<h2 style='color:#008CBA; margin:0;'>Graph View</h2>") {
+            if (state.savedComparisons.size() == 0) {
+                paragraph "No graphs created yet."
+            }
             state.savedComparisons.eachWithIndex { comp, idx ->
                 def sType = comp.style ?: 'line'
                 def fFill = comp.fill ?: false
@@ -84,7 +87,6 @@ def addComparisonPage() {
             if (newCompStyle == "bar") { input "fillBars", "bool", title: "Solid Connection Logic?", defaultValue: true }
         }
         section("Data Source") {
-            // DYNAMIC ATTRIBUTE LOGIC: Only show attributes currently selected for logging 
             def activeAttributes = []
             monitoredSensors?.each { dev ->
                 def selected = settings["attr_${dev.id}"]
@@ -98,7 +100,7 @@ def addComparisonPage() {
             if (activeAttributes.size() > 0) {
                 input "newCompAttr", "enum", title: "Attribute (Active Logs Only)", options: activeAttributes, required: true, submitOnChange: true
             } else {
-                paragraph "<b style='color:red;'>No data is being captured yet.</b><br>Please go back and select 'Attributes to Log' for at least one sensor."
+                paragraph "<b style='color:red;'>No data is being captured yet.</b>"
             }
 
             if (newCompAttr && monitoredSensors) {
@@ -107,7 +109,13 @@ def addComparisonPage() {
                     input "newCompSensors", "enum", title: "Sensors", options: validSensors, multiple: true, required: true
                 }
             }
-            input "saveCompBtn", "button", title: "Save & Return"
+            
+            input "saveCompBtn", "button", title: "SAVE GRAPH", width: 4
+            
+            if (state.lastAction) {
+                paragraph "<br><b style='color:#008CBA;'>${state.lastAction}</b>"
+                state.lastAction = null 
+            }
         }
     }
 }
@@ -116,11 +124,17 @@ def appButtonHandler(btn) {
     if (btn == "saveCompBtn") {
         if (newCompName && newCompSensors) {
             def sIds = (newCompSensors instanceof List) ? newCompSensors.join(",") : newCompSensors
-            state.savedComparisons << [name: newCompName, attr: newCompAttr, ids: sIds, style: newCompStyle, fill: (fillBars ?: false)]
+            def currentComps = state.savedComparisons ?: []
+            currentComps << [name: newCompName, attr: newCompAttr, ids: sIds, style: newCompStyle, fill: (fillBars ?: false)]
+            state.savedComparisons = currentComps
+            state.lastAction = "Graph '${newCompName}' saved! You can now go back to the main page."
         }
     }
     if (btn.startsWith("del_comp_")) {
-        state.savedComparisons.remove(btn.split("_")[-1].toInteger())
+        def idx = btn.split("_")[-1].toInteger()
+        def currentComps = state.savedComparisons
+        currentComps.remove(idx)
+        state.savedComparisons = currentComps
     }
 }
 
@@ -136,14 +150,11 @@ def initialize() {
 def handler(evt) {
     if (evt.value == null || !evt.value.toString().isNumber()) return
     def fileName = "graph_${evt.deviceId}_${evt.name}.csv"
-    
     if (state.eventCache[fileName] == null) state.eventCache[fileName] = []
     state.eventCache[fileName] << "${now()},${evt.value}"
-
     def userMaxCount = settings["batchCount_${evt.deviceId}"] ?: 100
     def userMaxHours = settings["batchTime_${evt.deviceId}"] ?: 1
     def lastWriteTime = state.lastWrite[fileName] ?: 0
-    
     if (state.eventCache[fileName].size() >= userMaxCount || (now() - lastWriteTime > (userMaxHours * 3600000L))) {
         commitToStorage(fileName, evt.deviceId)
     }
@@ -152,13 +163,10 @@ def handler(evt) {
 def commitToStorage(fileName, deviceId) {
     def daysToKeep = settings["retention_${deviceId}"] ?: 7
     long cutoff = now() - (daysToKeep * 86400000L)
-    
     def existing = ""
     try { existing = new String(downloadHubFile(fileName)) } catch (e) { }
-
     def newEntries = state.eventCache[fileName].join("\n")
     def fullData = existing + "\n" + newEntries
-    
     def lastClean = state.lastCleanup[fileName] ?: 0
     if (now() - lastClean > 86400000L) {
         def lines = fullData.split("\n")
@@ -168,7 +176,6 @@ def commitToStorage(fileName, deviceId) {
         }.join("\n")
         state.lastCleanup[fileName] = now()
     }
-    
     uploadHubFile(fileName, fullData.getBytes())
     state.eventCache[fileName] = []
     state.lastWrite[fileName] = now()
@@ -187,6 +194,10 @@ def renderChart() {
     long startTs = startStr ? Date.parse("yyyy-MM-dd", startStr).time : (now() - 86400000)
     long endTs = endStr ? Date.parse("yyyy-MM-dd", endStr).time + 86399999 : now()
     
+    // Formatting dates for the UI inputs beforehand to avoid backslash issues in HTML block
+    def displayStart = startStr ?: new Date(now()-86400000).format("yyyy-MM-dd")
+    def displayEnd = endStr ?: new Date().format("yyyy-MM-dd")
+    
     def columns = "data.addColumn('date', 'Time');"
     def masterMap = [:] 
 
@@ -197,7 +208,6 @@ def renderChart() {
             def csv = new String(downloadHubFile("graph_${id}_${attr}.csv"))
             def cachedItems = state.eventCache["graph_${id}_${attr}.csv"] ?: []
             def allLines = csv.split("\n") + cachedItems
-            
             allLines.each { line ->
                 def parts = line.split(",")
                 if (parts.size() == 2 && parts[0].isLong()) {
@@ -254,20 +264,20 @@ def renderChart() {
         </script>
       </head>
       <body>
-        <div class=\"controls\">
-            <form action=\"\" method=\"get\" style=\"display:contents;\">
-                <input type=\"hidden\" name=\"access_token\" value=\"${params.access_token ?: state.accessToken}\">
-                <input type=\"hidden\" name=\"ids\" value=\"${params.ids}\">
-                <input type=\"hidden\" name=\"attr\" value=\"${params.attr}\">
-                <input type=\"hidden\" name=\"style\" value=\"${params.style}\">
-                <input type=\"hidden\" name=\"fill\" value=\"${params.fill}\">
-                <div>From: <input type=\"date\" name=\"start\" value=\"${startStr ?: new Date(now()-86400000).format("yyyy-MM-dd")}\"></div>
-                <div class=\"data-title\">${attr}</div>
-                <div>To: <input type=\"date\" name=\"end\" value=\"${endStr ?: new Date().format("yyyy-MM-dd")}\">
-                <button type=\"submit\">Update</button></div>
+        <div class="controls">
+            <form action="" method="get" style="display:contents;">
+                <input type="hidden" name="access_token" value="${params.access_token ?: state.accessToken}">
+                <input type="hidden" name="ids" value="${params.ids}">
+                <input type="hidden" name="attr" value="${params.attr}">
+                <input type="hidden" name="style" value="${params.style}">
+                <input type="hidden" name="fill" value="${params.fill}">
+                <div>From: <input type="date" name="start" value="${displayStart}"></div>
+                <div class="data-title">${attr}</div>
+                <div>To: <input type="date" name="end" value="${displayEnd}">
+                <button type="submit">Update</button></div>
             </form>
         </div>
-        <div id=\"chart_div\"></div>
+        <div id="chart_div"></div>
       </body>
     </html>
     """
