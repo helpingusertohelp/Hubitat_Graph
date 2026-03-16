@@ -1,13 +1,13 @@
 /**
- * C-8 Pro Master Graphing - V3.4.4
- * Update: Changed Batch Interval from Minutes to Hours for better UX.
+ * C-8 Pro Master Graphing - V1
+ * Update: Dynamic Attribute Selection - Only shows attributes currently being logged.
  * Feature: Individual retention, RAM batching, and (FOUND HISTORY) labels.
  */
 definition(
     name: "C-8 Pro Master Graphing",
     namespace: "C8-Pro-Graphing",
     author: "Gemini-Optimized",
-    description: "Efficient graphing with Hour-based batching and data found indicators.",
+    description: "Efficient graphing with Hour-based batching and Dynamic Attribute filtering.",
     category: "My Apps",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
@@ -72,7 +72,7 @@ def mainPage() {
 
         section("Cleanup") {
              state.savedComparisons.eachWithIndex { comp, idx -> 
-                 input "del_comp_${idx}", "button", title: "Delete Graph: ${comp.name}", width: 4 
+                input "del_comp_${idx}", "button", title: "Delete Graph: ${comp.name}", width: 4 
              }
         }
     }
@@ -86,7 +86,23 @@ def addComparisonPage() {
             if (newCompStyle == "bar") { input "fillBars", "bool", title: "Solid Connection Logic?", defaultValue: true }
         }
         section("Data Source") {
-            input "newCompAttr", "enum", title: "Attribute", options: ["power", "temperature", "humidity", "energy", "voltage", "illuminance", "acceleration", "contact"], required: true, submitOnChange: true
+            // DYNAMIC ATTRIBUTE LOGIC: Only show attributes currently selected for logging 
+            def activeAttributes = []
+            monitoredSensors?.each { dev ->
+                def selected = settings["attr_${dev.id}"]
+                if (selected) {
+                    if (selected instanceof List) activeAttributes.addAll(selected)
+                    else activeAttributes.add(selected)
+                }
+            }
+            activeAttributes = activeAttributes.unique().sort()
+
+            if (activeAttributes.size() > 0) {
+                input "newCompAttr", "enum", title: "Attribute (Active Logs Only)", options: activeAttributes, required: true, submitOnChange: true
+            } else {
+                paragraph "<b style='color:red;'>No data is being captured yet.</b><br>Please go back and select 'Attributes to Log' for at least one sensor."
+            }
+
             if (newCompAttr && monitoredSensors) {
                 def validSensors = monitoredSensors.findAll { settings["attr_${it.id}"]?.contains(newCompAttr) }.collectEntries { [it.id, it.displayName] }
                 if (validSensors) {
@@ -130,7 +146,6 @@ def handler(evt) {
     def userMaxHours = settings["batchTime_${evt.deviceId}"] ?: 1
     def lastWriteTime = state.lastWrite[fileName] ?: 0
     
-    // Logic: Convert user hours to milliseconds (Hours * 3600000)
     if (state.eventCache[fileName].size() >= userMaxCount || (now() - lastWriteTime > (userMaxHours * 3600000L))) {
         commitToStorage(fileName, evt.deviceId)
     }
@@ -241,20 +256,20 @@ def renderChart() {
         </script>
       </head>
       <body>
-        <div class="controls">
-            <form action="" method="get" style="display:contents;">
-                <input type="hidden" name="access_token" value="${params.access_token ?: state.accessToken}">
-                <input type="hidden" name="ids" value="${params.ids}">
-                <input type="hidden" name="attr" value="${params.attr}">
-                <input type="hidden" name="style" value="${params.style}">
-                <input type="hidden" name="fill" value="${params.fill}">
-                <div>From: <input type="date" name="start" value="${startStr ?: new Date(now()-86400000).format("yyyy-MM-dd")}"></div>
-                <div class="data-title">${attr}</div>
-                <div>To: <input type="date" name="end" value="${endStr ?: new Date().format("yyyy-MM-dd")}">
-                <button type="submit">Update</button></div>
+        <div class=\"controls\">
+            <form action=\"\" method=\"get\" style=\"display:contents;\">
+                <input type=\"hidden\" name=\"access_token\" value=\"${params.access_token ?: state.accessToken}\">
+                <input type=\"hidden\" name=\"ids\" value=\"${params.ids}\">
+                <input type=\"hidden\" name=\"attr\" value=\"${params.attr}\">
+                <input type=\"hidden\" name=\"style\" value=\"${params.style}\">
+                <input type=\"hidden\" name=\"fill\" value=\"${params.fill}\">
+                <div>From: <input type=\"date\" name=\"start\" value=\"${startStr ?: new Date(now()-86400000).format("yyyy-MM-dd")}\"></div>
+                <div class=\"data-title\">${attr}</div>
+                <div>To: <input type=\"date\" name=\"end\" value=\"${endStr ?: new Date().format("yyyy-MM-dd")}\">
+                <button type=\"submit\">Update</button></div>
             </form>
         </div>
-        <div id="chart_div"></div>
+        <div id=\"chart_div\"></div>
       </body>
     </html>
     """
