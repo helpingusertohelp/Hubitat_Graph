@@ -1,13 +1,14 @@
 /**
- * C-8 Pro Master Graphing - V3.2.0 (Granular Retention)
- * Added: Individual sensor retention settings to control history length per device.
- * Optimization: Per-device pruning logic to minimize hub storage wear.
+ * C-8 Pro Master Graphing - V3.4.0 (Advanced Batching)
+ * Added: Manual control over Batch Count and Batch Interval per sensor.
+ * Added: Individual sensor retention settings.
+ * Optimization: Intelligent RAM caching to prevent hub storage wear.
  */
 definition(
     name: "C-8 Pro Master Graphing",
     namespace: "C8-Pro-Graphing",
     author: "Gemini-Optimized",
-    description: "Stable graphing with individual sensor data retention policies.",
+    description: "Stable graphing with manual batching controls and individual data retention.",
     category: "My Apps",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
@@ -24,6 +25,8 @@ def mainPage() {
     if(!state.accessToken) { try { createAccessToken() } catch (e) { } }
     if(state.savedComparisons == null) state.savedComparisons = []
     if(state.lastCleanup == null) state.lastCleanup = [:]
+    if(state.eventCache == null) state.eventCache = [:]
+    if(state.lastWrite == null) state.lastWrite = [:]
 
     dynamicPage(name: "mainPage", title: "Master Graphing System", install: true, uninstall: true) {
         section("<h2 style='color:#008CBA; margin:0;'>Graph View</h2>") {
@@ -35,7 +38,7 @@ def mainPage() {
             }
         }
 
-        section("Configuration & Retention") {
+        section("Configuration & Storage Optimization") {
             input "monitoredSensors", "capability.sensor", title: "Select Sensors to Record", multiple: true, required: true, submitOnChange: true
             if (monitoredSensors) {
                 monitoredSensors.sort{it.displayName}.each { dev ->
@@ -57,9 +60,11 @@ def mainPage() {
                     def devLabel = hasAnyFile ? "${dev.displayName} <b style='color:red;'>(DATA FOUND)</b>" : "${dev.displayName}"
                     paragraph "<br><b>${devLabel}</b>"
                     
-                    // NEW: Per-Device Retention Setting
-                    input "retention_${dev.id}", "number", title: "Days to keep ${dev.displayName} data", defaultValue: 7, required: true, width: 6
-                    input "attr_${dev.id}", "enum", title: "Attributes to log", options: attrOptions, multiple: true, submitOnChange: true, width: 6
+                    input "retention_${dev.id}", "number", title: "Days to Keep History", defaultValue: 7, required: true, width: 4
+                    input "batchCount_${dev.id}", "number", title: "Batch Count (Writes after X events)", defaultValue: 50, required: true, width: 4
+                    input "batchTime_${dev.id}", "number", title: "Batch Time (Writes every X mins)", defaultValue: 60, required: true, width: 4
+                    
+                    input "attr_${dev.id}", "enum", title: "Attributes to Log", options: attrOptions, multiple: true, submitOnChange: true
                 }
             }
         }
@@ -67,7 +72,7 @@ def mainPage() {
         section { href name: "toAddComparison", page: "addComparisonPage", title: "<b>+ Create New Graph</b>" }
         section("Cleanup") {
              state.savedComparisons.eachWithIndex { comp, idx -> 
-                 input "del_comp_${idx}", "button", title: "Delete: ${comp.name}", width: 4 
+                 input "del_comp_${idx}", "button", title: "Delete Graph: ${comp.name}", width: 4 
              }
         }
     }
@@ -86,8 +91,6 @@ def addComparisonPage() {
                 def validSensors = monitoredSensors.findAll { settings["attr_${it.id}"]?.contains(newCompAttr) }.collectEntries { [it.id, it.displayName] }
                 if (validSensors) {
                     input "newCompSensors", "enum", title: "Sensors", options: validSensors, multiple: true, required: true
-                } else {
-                    paragraph "No sensors are currently recording '${newCompAttr}'."
                 }
             }
             input "saveCompBtn", "button", title: "Save & Return"
@@ -122,29 +125,48 @@ def initialize() {
 def handler(evt) {
     if (evt.value == null || !evt.value.toString().isNumber()) return
     def fileName = "graph_${evt.deviceId}_${evt.name}.csv"
-    def entry = "${now()},${evt.value}\n"
     
-    // RETENTION: Lookup device-specific setting or default to 7
-    def daysToKeep = settings["retention_${evt.deviceId}"] ?: 7
+    // 1. Store in RAM Cache
+    if (state.eventCache[fileName] == null) state.eventCache[fileName] = []
+    state.eventCache[fileName] << "${now()},${evt.value}"
+
+    // 2. Lookup manual user thresholds
+    def userMaxCount = settings["batchCount_${evt.deviceId}"] ?: 50
+    def userMaxMinutes = settings["batchTime_${evt.deviceId}"] ?: 60
+    
+    def lastWriteTime = state.lastWrite[fileName] ?: 0
+    def cacheSize = state.eventCache[fileName].size()
+    
+    // 3. Logic: Write if count reached OR time elapsed (converted mins to ms)
+    if (cacheSize >= userMaxCount || (now() - lastWriteTime > (userMaxMinutes * 60000))) {
+        commitToStorage(fileName, evt.deviceId)
+    }
+}
+
+def commitToStorage(fileName, deviceId) {
+    def daysToKeep = settings["retention_${deviceId}"] ?: 7
     long cutoff = now() - (daysToKeep * 86400000L)
     
     def existing = ""
     try { existing = new String(downloadHubFile(fileName)) } catch (e) { }
 
-    // Prune logic triggered every 24 hours per file
+    def newEntries = state.eventCache[fileName].join("\n")
+    def fullData = existing + "\n" + newEntries
+    
+    // Prune logic (Every 24h per file)
     def lastClean = state.lastCleanup[fileName] ?: 0
     if (now() - lastClean > 86400000L) {
-        def lines = existing.split("\n")
-        def cleanedData = lines.findAll { line ->
+        def lines = fullData.split("\n")
+        fullData = lines.findAll { line ->
             def parts = line.split(",")
             return parts.size() == 2 && parts[0].isLong() && parts[0].toLong() > cutoff
         }.join("\n")
-        
-        uploadHubFile(fileName, (cleanedData + "\n" + entry).getBytes())
         state.lastCleanup[fileName] = now()
-    } else {
-        uploadHubFile(fileName, (existing + entry).getBytes())
     }
+    
+    uploadHubFile(fileName, fullData.getBytes())
+    state.eventCache[fileName] = []
+    state.lastWrite[fileName] = now()
 }
 
 mappings { path("/compare") { action: [GET: "renderChart"] } }
@@ -168,7 +190,10 @@ def renderChart() {
         columns += "data.addColumn('number', '${devName}');"
         try {
             def csv = new String(downloadHubFile("graph_${id}_${attr}.csv"))
-            csv.split("\n").each { line ->
+            def cachedItems = state.eventCache["graph_${id}_${attr}.csv"] ?: []
+            def allLines = csv.split("\n") + cachedItems
+            
+            allLines.each { line ->
                 def parts = line.split(",")
                 if (parts.size() == 2 && parts[0].isLong()) {
                     long ts = parts[0].toLong()
