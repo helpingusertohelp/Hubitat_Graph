@@ -5,7 +5,7 @@ definition(
     name: "C-8 Pro Master Graphing",
     namespace: "C8-Pro-Graphing",
     author: "Gemini-Optimized",
-    description: "Graphing with fixed save logic and shortened URLs for Safari.",
+    description: "Graphing with fixed UI syntax and dedicated config page.",
     category: "My Apps",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
@@ -15,6 +15,7 @@ definition(
 
 preferences {
     page(name: "mainPage")
+    page(name: "sensorConfigPage")
     page(name: "addComparisonPage")
 }
 
@@ -26,20 +27,35 @@ def mainPage() {
     if(state.lastWrite == null) state.lastWrite = [:]
 
     dynamicPage(name: "mainPage", title: "Master Graphing System", install: true, uninstall: true) {
-        section("<h2 style='color:#008CBA; margin:0;'>Graph View</h2>") {
+        section(("<h2 style='color:#008CBA; margin:0;'>Graph View</h2>")) {
             if (state.savedComparisons.size() == 0) {
                 paragraph "No graphs created yet."
             }
             state.savedComparisons.eachWithIndex { comp, idx ->
                 def sType = comp.style ?: 'line'
                 def fFill = comp.fill ?: false
-                // Shortened URL to prevent 414 error
                 def cUrl = "${getFullLocalApiServerUrl()}/compare?ids=${comp.ids}&attr=${comp.attr}&style=${sType}&fill=${fFill}&access_token=${state.accessToken}"
                 href url: cUrl, style: "external", title: "<b>${comp.name}</b>", description: "Click to view ${comp.attr} graph"
             }
         }
 
-        section("Sensor Configuration & Optimization") {
+        section("Settings & Data Management") {
+            href name: "toSensorConfig", page: "sensorConfigPage", title: "<b>Sensor Configuration & Optimization</b>", description: "Manage sensor logging and data history."
+        }
+       
+        section { href name: "toAddComparison", page: "addComparisonPage", title: "<b>+ Create New Graph</b>" }
+
+        section("Cleanup") {
+             state.savedComparisons.eachWithIndex { comp, idx -> 
+                input "del_comp_${idx}", "button", title: "Delete Graph: ${comp.name}", width: 4 
+             }
+        }
+    }
+}
+
+def sensorConfigPage() {
+    dynamicPage(name: "sensorConfigPage", title: "Sensor Configuration") {
+        section("Select and Configure Sensors") {
             input "monitoredSensors", "capability.sensor", title: "Select Sensors", multiple: true, required: true, submitOnChange: true
             if (monitoredSensors) {
                 monitoredSensors.sort{it.displayName}.each { dev ->
@@ -51,27 +67,21 @@ def mainPage() {
                         try { 
                             if (downloadHubFile("graph_${dev.id}_${aName}.csv") != null) { 
                                 exists = true
-                                hasAnyFile = true 
+                                hasAnyFile = true
                             } 
                         } catch (e) { }
-                        attrOptions.put(aName, exists ? "${aName} (FOUND HISTORY)" : "${aName}")
+                        attrOptions.put(aName, exists ? "${aName} (found history)" : "${aName}")
                     }
-                    def devLabel = hasAnyFile ? "${dev.displayName} <b style='color:red;'>(DATA FOUND)</b>" : "${dev.displayName}"
-                    paragraph "<br><b style='font-size:16px;'>${devLabel}</b>"
+                    
+                    def devLabel = hasAnyFile ? ("${dev.displayName} <b style='color:green;'>(data found)</b>") : "${dev.displayName}"
+                    paragraph ("<br><b style='font-size:16px;'>${devLabel}</b>")
+                    
                     input "retention_${dev.id}", "number", title: "Days to Keep", defaultValue: 7, required: true, width: 4
                     input "batchTime_${dev.id}", "number", title: "Write every X hours", defaultValue: 1, required: true, width: 4
                     input "batchCount_${dev.id}", "number", title: "OR after X events", defaultValue: 100, required: true, width: 4
                     input "attr_${dev.id}", "enum", title: "Attributes to Log", options: attrOptions, multiple: true, submitOnChange: true
                 }
             }
-        }
-        
-        section { href name: "toAddComparison", page: "addComparisonPage", title: "<b>+ Create New Graph</b>" }
-
-        section("Cleanup") {
-             state.savedComparisons.eachWithIndex { comp, idx -> 
-                input "del_comp_${idx}", "button", title: "Delete Graph: ${comp.name}", width: 4 
-             }
         }
     }
 }
@@ -97,7 +107,7 @@ def addComparisonPage() {
             if (activeAttributes.size() > 0) {
                 input "newCompAttr", "enum", title: "Attribute (Active Logs Only)", options: activeAttributes, required: true, submitOnChange: true
             } else {
-                paragraph "<b style='color:red;'>No data is being captured yet.</b>"
+                paragraph ("<b style='color:red;'>No data is being captured yet.</b>")
             }
 
             if (newCompAttr && monitoredSensors) {
@@ -110,7 +120,7 @@ def addComparisonPage() {
             input "saveCompBtn", "button", title: "SAVE GRAPH", width: 4
             
             if (state.lastAction) {
-                paragraph "<br><b style='color:#008CBA;'>${state.lastAction}</b>"
+                paragraph ("<br><b style='color:#008CBA;'>${state.lastAction}</b>")
                 state.lastAction = null 
             }
         }
@@ -119,7 +129,6 @@ def addComparisonPage() {
 
 def appButtonHandler(btn) {
     if (btn == "saveCompBtn") {
-        // We use settings here to ensure we grab the current values from the page
         if (settings.newCompName && settings.newCompSensors) {
             def sIds = (settings.newCompSensors instanceof List) ? settings.newCompSensors.join(",") : settings.newCompSensors
             def currentComps = state.savedComparisons ?: []
@@ -224,8 +233,9 @@ def renderChart() {
     }.join(",")
 
     def gClass = (chartStyle == "bar" && isFilled) ? "SteppedAreaChart" : (chartStyle == "bar" ? "ColumnChart" : "LineChart")
+    def pointSizeValue = (chartStyle == 'line' ? 5 : 0)
 
-    def html = """
+    def html = ("""
     <html>
       <head>
         <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
@@ -252,7 +262,7 @@ def renderChart() {
               hAxis: { textStyle: {color: '#ccc'}, gridlines: {color: '#333'}, format: 'MMM dd, HH:mm' },
               vAxis: { textStyle: {color: '#ccc'}, gridlines: {color: '#333'} },
               interpolateNulls: true,
-              pointSize: ${chartStyle == 'line' ? 5 : 0},
+              pointSize: ${pointSizeValue},
               colors: ['#3366cc', '#dc3912', '#ff9900', '#109618', '#990099', '#0099c6']
             };
             chart = new google.visualization.${gClass}(document.getElementById('chart_div'));
@@ -278,6 +288,6 @@ def renderChart() {
         <div id="chart_div"></div>
       </body>
     </html>
-    """
+    """)
     render contentType: "text/html", data: html
 }
