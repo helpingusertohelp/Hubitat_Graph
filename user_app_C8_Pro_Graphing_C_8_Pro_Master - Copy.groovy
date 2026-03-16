@@ -1,13 +1,14 @@
 /**
- * C-8 Pro Master Graphing - V3.4.2
- * Restore: (FOUND HISTORY) labels in configuration.
- * Fix: Restored Chart Style options (Line/Bar) in the renderer.
+ * C-8 Pro Master Graphing - V3.4.3
+ * Fix: Removed illegal backslashes in HTML block.
+ * Fix: Restored window resize listener for responsive charts.
+ * Feature: (FOUND HISTORY) labels and batching optimizations included.
  */
 definition(
     name: "C-8 Pro Master Graphing",
     namespace: "C8-Pro-Graphing",
     author: "Gemini-Optimized",
-    description: "Efficient graphing with RAM-to-Storage batching and data found indicators.",
+    description: "Efficient graphing with RAM batching, pruning, and responsive scaling.",
     category: "My Apps",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
@@ -218,11 +219,12 @@ def renderChart() {
         <script type="text/javascript">
           google.charts.load('current', {'packages':['corechart']});
           google.charts.setOnLoadCallback(drawChart);
+          var chart, data, options;
           function drawChart() {
-            var data = new google.visualization.DataTable();
+            data = new google.visualization.DataTable();
             ${columns}
             data.addRows([${rowString}]);
-            var options = {
+            options = {
               backgroundColor: '#121212',
               chartArea: {width: '90%', height: '80%'},
               legend: { position: 'bottom', textStyle: {color: '#ccc'} },
@@ -232,26 +234,27 @@ def renderChart() {
               pointSize: ${chartStyle == 'line' ? 5 : 0},
               colors: ['#3366cc', '#dc3912', '#ff9900', '#109618', '#990099', '#0099c6']
             };
-            var chart = new google.visualization.${gClass}(document.getElementById('chart_div'));
+            chart = new google.visualization.${gClass}(document.getElementById('chart_div'));
             chart.draw(data, options);
           }
+          window.addEventListener('resize', function() { if (chart && data && options) chart.draw(data, options); });
         </script>
       </head>
       <body>
-        <div class=\"controls\">
-            <form action=\"\" method=\"get\" style=\"display:contents;\">
-                <input type=\"hidden\" name=\"access_token\" value=\"${params.access_token ?: state.accessToken}\">
-                <input type=\"hidden\" name=\"ids\" value=\"${params.ids}\">
-                <input type=\"hidden\" name=\"attr\" value=\"${params.attr}\">
-                <input type=\"hidden\" name=\"style\" value=\"${params.style}\">
-                <input type=\"hidden\" name=\"fill\" value=\"${params.fill}\">
-                <div>From: <input type=\"date\" name=\"start\" value=\"${startStr ?: new Date(now()-86400000).format(\"yyyy-MM-dd\")}\"></div>
-                <div class=\"data-title\">${attr}</div>
-                <div>To: <input type=\"date\" name=\"end\" value=\"${endStr ?: new Date().format(\"yyyy-MM-dd\")}\">
-                <button type=\"submit\">Update</button></div>
+        <div class="controls">
+            <form action="" method="get" style="display:contents;">
+                <input type="hidden" name="access_token" value="${params.access_token ?: state.accessToken}">
+                <input type="hidden" name="ids" value="${params.ids}">
+                <input type="hidden" name="attr" value="${params.attr}">
+                <input type="hidden" name="style" value="${params.style}">
+                <input type="hidden" name="fill" value="${params.fill}">
+                <div>From: <input type="date" name="start" value="${startStr ?: new Date(now()-86400000).format("yyyy-MM-dd")}"></div>
+                <div class="data-title">${attr}</div>
+                <div>To: <input type="date" name="end" value="${endStr ?: new Date().format("yyyy-MM-dd")}">
+                <button type="submit">Update</button></div>
             </form>
         </div>
-        <div id=\"chart_div\"></div>
+        <div id="chart_div"></div>
       </body>
     </html>
     """
