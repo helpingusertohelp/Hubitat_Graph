@@ -1,7 +1,5 @@
 /**
  * C-8 Pro Master Graphing - V1
- * Update: Dynamic Attribute Selection - Only shows attributes currently being logged.
- * Feature: Individual retention, RAM batching, and (FOUND HISTORY) labels.
  */
 definition(
     name: "C-8 Pro Master Graphing",
