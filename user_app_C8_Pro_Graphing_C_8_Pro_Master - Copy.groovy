@@ -1,13 +1,13 @@
 /**
- * C-8 Pro Master Graphing - V3.4.1
- * Focus: Time-based batching with individual sensor retention.
- * Logic: Merges RAM cache with File storage for real-time accurate graphs.
+ * C-8 Pro Master Graphing - V3.4.2
+ * Restore: (FOUND HISTORY) labels in configuration.
+ * Fix: Restored Chart Style options (Line/Bar) in the renderer.
  */
 definition(
     name: "C-8 Pro Master Graphing",
     namespace: "C8-Pro-Graphing",
     author: "Gemini-Optimized",
-    description: "Efficient graphing with RAM-to-Storage batching and data pruning.",
+    description: "Efficient graphing with RAM-to-Storage batching and data found indicators.",
     category: "My Apps",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
@@ -17,6 +17,7 @@ definition(
 
 preferences {
     page(name: "mainPage")
+    page(name: "addComparisonPage")
 }
 
 def mainPage() {
@@ -40,32 +41,59 @@ def mainPage() {
             input "monitoredSensors", "capability.sensor", title: "Select Sensors", multiple: true, required: true, submitOnChange: true
             if (monitoredSensors) {
                 monitoredSensors.sort{it.displayName}.each { dev ->
-                    paragraph "<br><b style='font-size:16px;'>${dev.displayName}</b>"
+                    def hasAnyFile = false
+                    def attrOptions = [:]
+                    def supported = dev.supportedAttributes.collect { it.name }.unique().sort()
+          
+                    supported.each { aName ->
+                        def exists = false
+                        try { 
+                            if (downloadHubFile("graph_${dev.id}_${aName}.csv") != null) { 
+                                exists = true
+                                hasAnyFile = true 
+                            } 
+                        } catch (e) { }
+                        attrOptions.put(aName, exists ? "${aName} (FOUND HISTORY)" : "${aName}")
+                    }
+                    
+                    def devLabel = hasAnyFile ? "${dev.displayName} <b style='color:red;'>(DATA FOUND)</b>" : "${dev.displayName}"
+                    paragraph "<br><b style='font-size:16px;'>${devLabel}</b>"
                     
                     input "retention_${dev.id}", "number", title: "Days to Keep", defaultValue: 7, required: true, width: 4
                     input "batchTime_${dev.id}", "number", title: "Write every X mins", defaultValue: 60, required: true, width: 4
                     input "batchCount_${dev.id}", "number", title: "OR after X events", defaultValue: 100, required: true, width: 4
                     
-                    def attrOptions = dev.supportedAttributes.collect { it.name }.unique().sort()
                     input "attr_${dev.id}", "enum", title: "Attributes to Log", options: attrOptions, multiple: true, submitOnChange: true
                 }
             }
         }
         
-        section("Graph Setup") {
-            input "newCompName", "text", title: "Chart Name"
-            input "newCompAttr", "enum", title: "Attribute", options: ["power", "temperature", "humidity", "energy", "voltage", "illuminance", "acceleration", "contact"]
-            if (newCompAttr && monitoredSensors) {
-                def validSensors = monitoredSensors.findAll { settings["attr_${it.id}"]?.contains(newCompAttr) }.collectEntries { [it.id, it.displayName] }
-                input "newCompSensors", "enum", title: "Sensors", options: validSensors, multiple: true
-            }
-            input "saveCompBtn", "button", title: "Add Graph"
-        }
+        section { href name: "toAddComparison", page: "addComparisonPage", title: "<b>+ Create New Graph</b>" }
 
         section("Cleanup") {
              state.savedComparisons.eachWithIndex { comp, idx -> 
-                 input "del_comp_${idx}", "button", title: "Delete: ${comp.name}", width: 4 
+                 input "del_comp_${idx}", "button", title: "Delete Graph: ${comp.name}", width: 4 
              }
+        }
+    }
+}
+
+def addComparisonPage() {
+    dynamicPage(name: "addComparisonPage", title: "Setup Graph") {
+        section("Display Settings") {
+            input "newCompName", "text", title: "Friendly Name", required: true
+            input "newCompStyle", "enum", title: "Chart Style", options: ["line":"Line Chart (Dots)", "bar":"Bar Chart (Solid)"], defaultValue: "line", required: true, submitOnChange: true
+            if (newCompStyle == "bar") { input "fillBars", "bool", title: "Solid Connection Logic?", defaultValue: true }
+        }
+        section("Data Source") {
+            input "newCompAttr", "enum", title: "Attribute", options: ["power", "temperature", "humidity", "energy", "voltage", "illuminance", "acceleration", "contact"], required: true, submitOnChange: true
+            if (newCompAttr && monitoredSensors) {
+                def validSensors = monitoredSensors.findAll { settings["attr_${it.id}"]?.contains(newCompAttr) }.collectEntries { [it.id, it.displayName] }
+                if (validSensors) {
+                    input "newCompSensors", "enum", title: "Sensors", options: validSensors, multiple: true, required: true
+                }
+            }
+            input "saveCompBtn", "button", title: "Save & Return"
         }
     }
 }
@@ -74,7 +102,7 @@ def appButtonHandler(btn) {
     if (btn == "saveCompBtn") {
         if (newCompName && newCompSensors) {
             def sIds = (newCompSensors instanceof List) ? newCompSensors.join(",") : newCompSensors
-            state.savedComparisons << [name: newCompName, attr: newCompAttr, ids: sIds, style: "line", fill: false]
+            state.savedComparisons << [name: newCompName, attr: newCompAttr, ids: sIds, style: newCompStyle, fill: (fillBars ?: false)]
         }
     }
     if (btn.startsWith("del_comp_")) {
@@ -102,7 +130,6 @@ def handler(evt) {
     def userMaxMinutes = settings["batchTime_${evt.deviceId}"] ?: 60
     def lastWriteTime = state.lastWrite[fileName] ?: 0
     
-    // Check if we hit the time limit or the safety count limit
     if (state.eventCache[fileName].size() >= userMaxCount || (now() - lastWriteTime > (userMaxMinutes * 60000))) {
         commitToStorage(fileName, evt.deviceId)
     }
@@ -118,7 +145,6 @@ def commitToStorage(fileName, deviceId) {
     def newEntries = state.eventCache[fileName].join("\n")
     def fullData = existing + "\n" + newEntries
     
-    // Prune logic (Every 24h per file)
     def lastClean = state.lastCleanup[fileName] ?: 0
     if (now() - lastClean > 86400000L) {
         def lines = fullData.split("\n")
@@ -139,8 +165,11 @@ mappings { path("/compare") { action: [GET: "renderChart"] } }
 def renderChart() {
     def ids = params.ids?.split(",")
     def attr = params.attr
+    def chartStyle = params.style ?: "line"
+    def isFilled = (params.fill == "true")
     def startStr = params.start ?: ""
     def endStr = params.end ?: ""
+    
     long startTs = startStr ? Date.parse("yyyy-MM-dd", startStr).time : (now() - 86400000)
     long endTs = endStr ? Date.parse("yyyy-MM-dd", endStr).time + 86399999 : now()
     
@@ -172,6 +201,8 @@ def renderChart() {
         return "[new Date(${ts}), ${vals.collect{it==null?'null':it}.join(",")}]"
     }.join(",")
 
+    def gClass = (chartStyle == "bar" && isFilled) ? "SteppedAreaChart" : (chartStyle == "bar" ? "ColumnChart" : "LineChart")
+
     def html = """
     <html>
       <head>
@@ -198,27 +229,29 @@ def renderChart() {
               hAxis: { textStyle: {color: '#ccc'}, gridlines: {color: '#333'}, format: 'MMM dd, HH:mm' },
               vAxis: { textStyle: {color: '#ccc'}, gridlines: {color: '#333'} },
               interpolateNulls: true,
-              pointSize: 5,
-              colors: ['#3366cc', '#dc3912', '#ff9900', '#109618']
+              pointSize: ${chartStyle == 'line' ? 5 : 0},
+              colors: ['#3366cc', '#dc3912', '#ff9900', '#109618', '#990099', '#0099c6']
             };
-            var chart = new google.visualization.LineChart(document.getElementById('chart_div'));
+            var chart = new google.visualization.${gClass}(document.getElementById('chart_div'));
             chart.draw(data, options);
           }
         </script>
       </head>
       <body>
-        <div class="controls">
-            <form action="" method="get" style="display:contents;">
-                <input type="hidden" name="access_token" value="${params.access_token ?: state.accessToken}">
-                <input type="hidden" name="ids" value="${params.ids}">
-                <input type="hidden" name="attr" value="${params.attr}">
-                <div>From: <input type="date" name="start" value="${startStr ?: new Date(now()-86400000).format("yyyy-MM-dd")}"></div>
-                <div class="data-title">${attr}</div>
-                <div>To: <input type="date" name="end" value="${endStr ?: new Date().format("yyyy-MM-dd")}">
-                <button type="submit">Update</button></div>
+        <div class=\"controls\">
+            <form action=\"\" method=\"get\" style=\"display:contents;\">
+                <input type=\"hidden\" name=\"access_token\" value=\"${params.access_token ?: state.accessToken}\">
+                <input type=\"hidden\" name=\"ids\" value=\"${params.ids}\">
+                <input type=\"hidden\" name=\"attr\" value=\"${params.attr}\">
+                <input type=\"hidden\" name=\"style\" value=\"${params.style}\">
+                <input type=\"hidden\" name=\"fill\" value=\"${params.fill}\">
+                <div>From: <input type=\"date\" name=\"start\" value=\"${startStr ?: new Date(now()-86400000).format(\"yyyy-MM-dd\")}\"></div>
+                <div class=\"data-title\">${attr}</div>
+                <div>To: <input type=\"date\" name=\"end\" value=\"${endStr ?: new Date().format(\"yyyy-MM-dd\")}\">
+                <button type=\"submit\">Update</button></div>
             </form>
         </div>
-        <div id="chart_div"></div>
+        <div id=\"chart_div\"></div>
       </body>
     </html>
     """
